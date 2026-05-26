@@ -1,23 +1,41 @@
-# ============================================================
-# EMAIL AGENT — IMAP + OLLAMA CLI (STRICT, NO HTTP)
-# ============================================================
+"""
+Email Agent — IMAP + Ollama CLI
+
+Fetches Gmail messages for a given day over IMAP, classifies each one with
+simple keyword rules, and uses a local Ollama model (via its CLI, no HTTP)
+to produce a 2–3 bullet summary and a draft reply when one is warranted.
+
+Credentials are read from environment variables (see .env.example).
+"""
 
 import imaplib
 import email
+import os
+import sys
 from email.header import decode_header
 from datetime import datetime
 import subprocess
 
-# ============================================================
+# ------------------------------------------------------------
 # CONFIG
-# ============================================================
+# ------------------------------------------------------------
 
-IMAP_SERVER = "imap.gmail.com"
-IMAP_PORT = 993
-EMAIL_ADDRESS = "prahaansanghvi2409@gmail.com"
-APP_PASSWORD = "APP_PASSWORD"
+IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
+IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+APP_PASSWORD = os.getenv("APP_PASSWORD")
 
-OLLAMA_MODEL = "llama3.1:8b"
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+
+
+def _require_env():
+    missing = [k for k in ("EMAIL_ADDRESS", "APP_PASSWORD") if not os.getenv(k)]
+    if missing:
+        sys.exit(
+            "Missing required environment variables: "
+            + ", ".join(missing)
+            + ". See .env.example."
+        )
 
 # ============================================================
 # OLLAMA CALL (CLI ONLY — NO URL)
@@ -203,4 +221,5 @@ def run_email_agent(date):
 # ============================================================
 
 if __name__ == "__main__":
+    _require_env()
     run_email_agent(datetime.today())
