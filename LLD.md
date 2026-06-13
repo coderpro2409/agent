@@ -1,85 +1,129 @@
-# Email Agent: Low-Level Design
+# Email Agent: LLD
 
-> Version 1.0 - describes `agent.py` as it stands today.
-
-## 1. Architecture
+## Architecture
 
 ```
-+---------------+      +---------+      +-------------+
-| Env vars      | ---> | IMAP    | ---> | Email parse |
-| (.env)        |      | client  |      | (stdlib)    |
-+---------------+      +---------+      +------+------+
-                                               |
-                                               v
-                                       +---------------+
-                                       | Classifier    |
-                                       | (keyword)     |
-                                       +-------+-------+
-                                               |
-                       +-----------------------+----------------------+
-                       |                       |                      |
-                       v                       v                      v
-              +----------------+      +----------------+    +----------------+
-              | Summarizer     |      | Reply drafter  |    | Output         |
-              | (Ollama CLI)   |      | (Ollama CLI)   |    | formatter      |
-              +-------+--------+      +-------+--------+    +-------+--------+
-                      |                       |                     |
-                      +-----------+-----------+                     |
-                                  |                                 |
-                                  +---------------------------------+
-                                                  |
-                                                  v
-                                              stdout
+env vars (.env)
+    |
+    v
+IMAP4_SSL --- login --- select inbox --- search ON <date> --- fetch RFC822
+                                                                  |
+                                                                  v
+                                           email.message_from_bytes + parse
+                                                                  |
+                                                                  v
+                                          classify_email (keyword first-match)
+                                                                  |
+                            +---------------+--------------------+----------------+
+                            |               |                    |                |
+                            v               v                    v                |
+                  Marketing? skip   summarize_email     generate_reply             |
+                                    (ollama CLI)        (ollama CLI)               |
+                                          |                    |                   |
+                                          +--------------------+-------------------+
+                                                                  |
+                                                                  v
+                                                         format_output to stdout
 ```
 
-## 2. Modules in `agent.py`
+The whole thing is one file, `agent.py`, around 230 lines. I considered splitting parser/classifier/generator into modules and decided against it; the surface area doesn't justify the navigation cost.
 
-| Function | Inputs | Outputs | Notes |
-|---|---|---|---|
-| `_require_env()` | none | exits if env vars missing | Validates `EMAIL_ADDRESS` and `APP_PASSWORD` |
-| `ollama_generate(prompt)` | str | str | Subprocess to `ollama run <MODEL>`; UTF-8 forced; `errors="ignore"` |
-| `classify_email(subject, body)` | str, str | category str | Lowercases, runs `any(k in text for k in [...])` per category; defaults to Work |
-| `fetch_emails_for_day(date)` | datetime | list of `email.message.Message` | IMAP4_SSL connect, login, select INBOX, search `ON "<dd-Mon-YYYY>"`, fetch RFC822 per UID |
-| `parse_email(msg)` | message | (subject, sender, body) | Decodes subject with `decode_header`; walks multipart for `text/plain` |
-| `summarize_email(body)` | str | str | Fixed prompt: "No assumptions, no added information" |
-| `reply_required(category)` | str | bool | True for Work and Networking |
-| `is_elder_professional(sender)` | str | bool | Substring match on sender header |
-| `generate_reply(body, sender, category)` | str, str, str | str | Returns "Not required" for non-eligible categories; wraps model output with greeting and sign-off |
-| `format_output(category, summary, reply_needed, draft)` | tuple | none | Prints a fixed block to stdout |
-| `run_email_agent(date)` | datetime | none | Orchestrates fetch, per-email pipeline, print |
+## The Ollama path
 
-## 3. Configuration
+The thing that surprises people: I shell out to `ollama run <model>` rather than hitting the HTTP endpoint at `localhost:11434`. Two reasons. One, no Python HTTP dependency (the whole agent uses stdlib only for everything except the subprocess call). Two, the CLI path made debugging easier early on because I could paste the same prompt into a terminal and compare. The HTTP API would be slightly faster; I haven't needed the latency.
 
-| Env var | Default | Purpose |
-|---|---|---|
-| `IMAP_SERVER` | `imap.gmail.com` | IMAP host |
-| `IMAP_PORT` | `993` | IMAPS port |
-| `EMAIL_ADDRESS` | required | Login |
-| `APP_PASSWORD` | required | Gmail app password |
-| `OLLAMA_MODEL` | `llama3.1:8b` | Model passed to `ollama run` |
-
-## 4. Classifier rules (first-match wins)
-
-```
-1. text contains any of {invoice, payment, bill, transaction}    -> Payments
-2. text contains any of {internship, application, hr, selection} -> Internship
-3. text contains any of {meeting, assignment, project, submission, school} -> Work
-4. text contains any of {connect, linkedin, network, collaborate} -> Networking
-5. text contains any of {sale, offer, discount, promo, unsubscribe} -> Marketing/Promotion
-6. otherwise                                                      -> Work
+```python
+def ollama_generate(prompt):
+    process = subprocess.run(
+        ["ollama", "run", OLLAMA_MODEL],
+        input=prompt,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+        capture_output=True,
+    )
+    if process.returncode != 0:
+        raise RuntimeError(process.stderr)
+    return process.stdout.strip()
 ```
 
-The order encodes a priority: financial, then recruiting, then work, then networking, then marketing. Marketing sits last because its keywords ("offer", "sale") are noisy and would otherwise capture legitimate work mail (think "we can offer you a meeting on Tuesday").
+UTF-8 with `errors="ignore"` is mandatory on Windows. Without it, a single non-ASCII character in an email body crashes the subprocess.
 
-## 5. Senior sender detection
+## Configuration
 
-`is_elder_professional(sender)` does a case-insensitive substring search of the sender string against `["principal", "teacher", "sir", "ma'am"]`. The sender string is the raw `From` header value, which for typical Gmail headers looks like `"Mr. Verma (Principal) <verma@example.com>"`.
+Everything is env vars:
 
-When the match hits, the greeting becomes `Good Morning Sir/Ma'am,` and the sign-off becomes `Thank You\n\nRegards\nPrahaan Sanghvi`. Otherwise the greeting is `Hello,` and the sign-off is `Regards\nPrahaan Sanghvi`.
+```
+IMAP_SERVER     default imap.gmail.com
+IMAP_PORT       default 993
+EMAIL_ADDRESS   required
+APP_PASSWORD    required
+OLLAMA_MODEL    default llama3.1:8b
+```
 
-## 6. Prompts
+`_require_env()` runs on startup. If `EMAIL_ADDRESS` or `APP_PASSWORD` is missing, it writes a clear message to stderr and exits non-zero. The other three have sensible defaults.
 
-### 6.1 Summary prompt
+## The IMAP fetch
+
+```python
+mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+mail.login(EMAIL_ADDRESS, APP_PASSWORD)
+mail.select("inbox")
+date_str = date.strftime("%d-%b-%Y")   # e.g. "13-Jun-2026"
+status, data = mail.search(None, f'(ON "{date_str}")')
+```
+
+The `dd-Mon-YYYY` format isn't optional. IMAP's `ON` search rejects any other date format. Took me embarrassingly long to figure that out.
+
+For each UID returned, `fetch(uid, "(RFC822)")` pulls the full message, which `email.message_from_bytes` parses into something with `.walk()`, `.get()`, and `.get_payload()`.
+
+## Parsing one message
+
+`parse_email` returns `(subject, sender, body)`:
+
+- Subject: `decode_header` handles encoded-words (`=?UTF-8?B?...?=`); fall back to UTF-8 with errors ignored.
+- Sender: raw From header.
+- Body: walk the multipart tree, take the first `text/plain` part that isn't an attachment, decode as UTF-8 with errors ignored.
+
+HTML-only messages produce an empty body. The summarizer and drafter handle this fine (they just produce shorter output) but the result is less useful. Adding an `html2text` fallback would help; not in v1.
+
+## Classification
+
+```python
+def classify_email(subject, body):
+    text = f"{subject} {body}".lower()
+    if any(k in text for k in ["invoice", "payment", "bill", "transaction"]):
+        return "Payments"
+    if any(k in text for k in ["internship", "application", "hr", "selection"]):
+        return "Internship"
+    if any(k in text for k in ["meeting", "assignment", "project", "submission", "school"]):
+        return "Work"
+    if any(k in text for k in ["connect", "linkedin", "network", "collaborate"]):
+        return "Networking"
+    if any(k in text for k in ["sale", "offer", "discount", "promo", "unsubscribe"]):
+        return "Marketing/Promotion"
+    return "Work"
+```
+
+The ordering is the only interesting decision. Financial keywords are unambiguous; recruiting keywords are mostly unambiguous; "meeting" and "project" dominate my actual work mail, so Work catches the bulk. Networking sits after Work because a LinkedIn message often also mentions "project" or "meeting". Marketing sits last because its keywords are noisy. The default fallback is Work because that's the most common type of mail I actually act on.
+
+## Senior detection
+
+```python
+def is_elder_professional(sender):
+    keywords = ["principal", "teacher", "sir", "ma'am"]
+    return any(k in sender.lower() for k in keywords)
+```
+
+It looks at the raw From header, which on Gmail typically includes the display name (`"Mr. Verma (Principal) <verma@example.com>"`). When matched, the greeting becomes "Good Morning Sir/Ma'am," and the sign-off is "Thank You\n\nRegards\nPrahaan Sanghvi". Otherwise it's "Hello," and "Regards\nPrahaan Sanghvi".
+
+The senior list is biased toward an Indian school context, which is where this got built. Easy to extend.
+
+## Prompts
+
+Two prompts, both small, both grounded in not-trusting-the-model.
+
+Summary:
 
 ```
 Summarize the following email in EXACTLY 2-3 bullet points.
@@ -91,7 +135,7 @@ Email:
 <body>
 ```
 
-### 6.2 Reply prompt
+Reply:
 
 ```
 Write a professional and concise reply to the email below.
@@ -105,68 +149,49 @@ Email:
 <body>
 ```
 
-The "do not include greetings or sign-offs" rule keeps the model focused on substance. The wrapper code adds greeting and sign-off, so the senior-vs-default tone stays under our control, not the model's.
+The "no greetings or sign-offs" rule is load-bearing. It lets the wrapper code own the tone, and stops the model from inventing its own sign-off ("Best regards, AI") that I'd then have to strip.
 
-## 7. Output format (fixed)
+## Output format
 
 ```
 Email Category:
 <category>
 
 Summary:
-<summary text or "Not required">
+<summary or "Not required">
 
 Reply Required:
 <Yes or No>
 
 Draft Reply:
-<draft text or "Not required">
+<draft or "Not required">
 ```
 
-This is a stable contract for any downstream tool that wants to scrape the output (a Markdown formatter, an Obsidian importer, a daily digest).
+Fixed and stable. If I ever want to pipe this into a Markdown formatter or an Obsidian importer, the block boundaries make it easy.
 
-## 8. Sequence: one run
+## Where it breaks
 
-1. `__main__` calls `_require_env()`. Exits with a clear message if env vars are missing.
-2. `run_email_agent(datetime.today())` is called.
-3. `fetch_emails_for_day(today)`:
-   1. `imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)`.
-   2. `login(EMAIL_ADDRESS, APP_PASSWORD)`.
-   3. `select("inbox")`.
-   4. `search(None, f'(ON "{dd-Mon-YYYY}")')`.
-   5. For each UID in the result, `fetch(uid, "(RFC822)")` and parse with `email.message_from_bytes`.
-   6. `logout()`.
-4. For each message:
-   1. `parse_email(msg)` -> subject, sender, body.
-   2. `classify_email(subject, body)` -> category.
-   3. If category != Marketing/Promotion: `summarize_email(body)` -> summary.
-   4. `generate_reply(body, sender, category)` -> draft.
-   5. `format_output(category, summary, reply_required(category), draft)`.
-
-## 9. Failure modes
-
-| Scenario | Behavior |
+| What happens | What the agent does |
 |---|---|
-| Missing env vars | `_require_env` writes the missing keys to stderr and calls `sys.exit` with a non-zero exit code |
-| IMAP auth fails | `imaplib` raises `IMAP4.error`; currently propagates as an uncaught exception. Acceptable for v1 since the remedy is "set the app password correctly" |
-| Ollama CLI not installed | Subprocess raises `FileNotFoundError: 'ollama'`; the caller sees a clear stack trace |
-| Ollama subprocess returns non-zero | `ollama_generate` raises `RuntimeError(process.stderr)`. The current loop does not catch this, so one bad message stops the run. Known limitation |
-| Email body has odd encoding | `errors="ignore"` on the UTF-8 decode strips bad bytes rather than crashing |
-| No emails on the given date | `fetch_emails_for_day` returns an empty list; `run_email_agent` produces no output |
-| Sender header is `None` | `msg.get("From").strip()` would raise; trusted to be present for delivered mail; not defended against |
+| Env vars missing | `_require_env` prints to stderr, exits non-zero |
+| IMAP auth fails | `imaplib.IMAP4.error` propagates uncaught (acceptable; fix is "set the app password right") |
+| Ollama not installed | `FileNotFoundError: 'ollama'` from subprocess |
+| Ollama subprocess returns non-zero | `RuntimeError(process.stderr)` propagates and kills the run (known bug; one bad message stops the loop) |
+| Body encoding is weird | `errors="ignore"` strips bad bytes |
+| No mail today | Empty list, agent exits silently |
 
-## 10. Security and privacy
+The "Ollama failure kills the run" bug is the most annoying one. Easy fix: wrap each per-message pipeline in try/except, log to stderr, continue. Not yet done.
 
-- App password lives in `.env`. `.env.example` is committed; `.env` is gitignored.
-- The agent never writes mail content to disk. Everything stays in stdout and in process memory.
-- The Ollama subprocess receives the email body via stdin, not via command-line arguments, so the body does not appear in process listings.
-- No outbound HTTP. Mail fetch goes over IMAP/TLS to Gmail; generation goes to a local subprocess.
+## Privacy
 
-## 11. Known limitations and extension hooks
+App password lives in `.env`, gitignored. The agent never writes mail content to disk. Email body goes to the Ollama subprocess via stdin, not as a command-line argument, so it doesn't appear in process listings. No outbound HTTP except IMAP/TLS to Gmail.
 
-1. **Date scope is one day.** Add a `--since` CLI argument to widen.
-2. **No deduplication.** A re-run on the same day reprocesses every message; a small UID cache file would fix this.
-3. **Hard-coded sign-off.** Move to env: `SIGNOFF_NAME`, `SIGNOFF_TEMPLATE`.
-4. **Stops on one model error.** Wrap each per-message pipeline in try/except, log to stderr, continue.
-5. **Plain-text bodies only.** HTML bodies are ignored; an `html2text` step would broaden support at the cost of one new dependency.
-6. **No metrics.** A final summary line ("processed N messages, M needed replies, took T seconds") would help users tune.
+## What's missing
+
+In rough priority:
+
+1. **Don't die on one Ollama failure.** Try/except per message.
+2. **Persist UIDs already processed.** A small JSON file keyed by `(account, date)` containing the set of UIDs handled. Lets re-runs skip work.
+3. **Env-driven sign-off.** `SIGNOFF_NAME`, `SIGNOFF_TEMPLATE`. Killing the hardcoded "Prahaan Sanghvi".
+4. **Date range.** A CLI flag for `--since` and `--until`, so I can backfill missed days.
+5. **HTML body fallback.** `html2text` if no plain-text part exists.
