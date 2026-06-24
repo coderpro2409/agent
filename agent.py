@@ -23,8 +23,10 @@ import requests
 
 IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
 IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
-EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
-APP_PASSWORD = os.getenv("APP_PASSWORD")
+# Defensive: trim stray whitespace/newlines; Gmail App Passwords work without
+# the display spaces, so strip those from the password too.
+EMAIL_ADDRESS = (os.getenv("EMAIL_ADDRESS") or "").strip()
+APP_PASSWORD = (os.getenv("APP_PASSWORD") or "").strip().replace(" ", "")
 
 # Self-hosted, open-source: the LLM is served by Ollama over its HTTP API.
 # OLLAMA_BASE_URL points at the Ollama server (localhost in the CI runner or
