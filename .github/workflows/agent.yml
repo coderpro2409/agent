@@ -6,8 +6,6 @@ on:
   schedule:
     - cron: "30 2 * * *"
   workflow_dispatch: {}   # allows manual runs from the Actions tab
-  push:
-    branches: [main]      # TEMP: trigger a verification run on push
 
 jobs:
   run-agent:
@@ -35,23 +33,6 @@ jobs:
             sleep 1
           done
           ollama pull "$LLM_MODEL"
-
-      - name: Diagnose secret integrity (no secret values printed)
-        env:
-          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
-          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-        run: |
-          python - <<'EOF'
-          import os
-          e = os.environ.get("EMAIL_ADDRESS", "")
-          p = os.environ.get("APP_PASSWORD", "")
-          print("EMAIL len:", len(e), "| stripped len:", len(e.strip()),
-                "| endswith @gmail.com:", e.strip().endswith("@gmail.com"),
-                "| has space:", (" " in e))
-          pp = p.strip().replace(" ", "")
-          print("PASS raw len:", len(p), "| cleaned len:", len(pp),
-                "| cleaned is 16 lower-alpha:", (len(pp) == 16 and pp.isalpha() and pp.islower()))
-          EOF
 
       - name: Run email agent
         env:
