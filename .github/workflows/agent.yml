@@ -6,6 +6,8 @@ on:
   schedule:
     - cron: "30 2 * * *"
   workflow_dispatch: {}   # allows manual runs from the Actions tab
+  push:
+    branches: [main]      # TEMP: trigger a verification run on push
 
 jobs:
   run-agent:
