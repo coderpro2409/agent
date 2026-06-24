@@ -14,7 +14,8 @@ import os
 import sys
 from email.header import decode_header
 from datetime import datetime
-import subprocess
+
+import requests
 
 # ------------------------------------------------------------
 # CONFIG
@@ -25,11 +26,18 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+# Hosted LLM via OpenRouter (replaces the local Ollama CLI so this can run
+# headless on a CI cron runner). Get a free key at https://openrouter.ai/keys
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+LLM_MODEL = os.getenv("LLM_MODEL", "mistralai/mistral-7b-instruct:free")
 
 
 def _require_env():
-    missing = [k for k in ("EMAIL_ADDRESS", "APP_PASSWORD") if not os.getenv(k)]
+    missing = [
+        k for k in ("EMAIL_ADDRESS", "APP_PASSWORD", "OPENROUTER_API_KEY")
+        if not os.getenv(k)
+    ]
     if missing:
         sys.exit(
             "Missing required environment variables: "
@@ -43,21 +51,24 @@ def _require_env():
 
 def ollama_generate(prompt):
     """
-    Calls Ollama via CLI using UTF-8 encoding (Windows-safe).
+    Calls a hosted LLM through the OpenRouter chat-completions API.
+    Kept under the original name so the rest of the agent is unchanged.
     """
-    process = subprocess.run(
-        ["ollama", "run", OLLAMA_MODEL],
-        input=prompt,
-        text=True,
-        encoding="utf-8",          # ✅ FORCE UTF-8
-        errors="ignore",           # ✅ Prevent crashes on bad chars
-        capture_output=True
+    resp = requests.post(
+        f"{OPENROUTER_BASE_URL}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": LLM_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+        },
+        timeout=120,
     )
-
-    if process.returncode != 0:
-        raise RuntimeError(process.stderr)
-
-    return process.stdout.strip()
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
 
 
 # ============================================================
