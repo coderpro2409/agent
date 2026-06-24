@@ -24,6 +24,6 @@ jobs:
         env:
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          LLM_MODEL: mistralai/mistral-7b-instruct:free
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          LLM_MODEL: Qwen/Qwen2.5-7B-Instruct
         run: python agent.py

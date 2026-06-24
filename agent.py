@@ -1,9 +1,9 @@
 """
-Email Agent — IMAP + Ollama CLI
+Email Agent: IMAP + Hugging Face Inference API
 
 Fetches Gmail messages for a given day over IMAP, classifies each one with
-simple keyword rules, and uses a local Ollama model (via its CLI, no HTTP)
-to produce a 2–3 bullet summary and a draft reply when one is warranted.
+simple keyword rules, and uses an open-weight model via the Hugging Face
+Inference API to produce a 2-3 bullet summary and a draft reply when warranted.
 
 Credentials are read from environment variables (see .env.example).
 """
@@ -15,7 +15,7 @@ import sys
 from email.header import decode_header
 from datetime import datetime
 
-import requests
+from huggingface_hub import InferenceClient
 
 # ------------------------------------------------------------
 # CONFIG
@@ -26,16 +26,16 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 
-# Hosted LLM via OpenRouter (replaces the local Ollama CLI so this can run
-# headless on a CI cron runner). Get a free key at https://openrouter.ai/keys
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "mistralai/mistral-7b-instruct:free")
+# Open-source LLM via the Hugging Face Inference API (replaces the local Ollama
+# CLI so this can run headless on a CI cron runner). No proprietary service.
+# Get a free token at https://huggingface.co/settings/tokens
+HF_TOKEN = os.getenv("HF_TOKEN")
+LLM_MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct")
 
 
 def _require_env():
     missing = [
-        k for k in ("EMAIL_ADDRESS", "APP_PASSWORD", "OPENROUTER_API_KEY")
+        k for k in ("EMAIL_ADDRESS", "APP_PASSWORD", "HF_TOKEN")
         if not os.getenv(k)
     ]
     if missing:
@@ -46,29 +46,21 @@ def _require_env():
         )
 
 # ============================================================
-# OLLAMA CALL (CLI ONLY — NO URL)
+# LLM CALL (Hugging Face Inference API)
 # ============================================================
 
 def ollama_generate(prompt):
     """
-    Calls a hosted LLM through the OpenRouter chat-completions API.
+    Calls an open-weight LLM through the Hugging Face Inference API.
     Kept under the original name so the rest of the agent is unchanged.
     """
-    resp = requests.post(
-        f"{OPENROUTER_BASE_URL}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": LLM_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2,
-        },
-        timeout=120,
+    client = InferenceClient(model=LLM_MODEL, token=HF_TOKEN)
+    completion = client.chat_completion(
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1024,
+        temperature=0.2,
     )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    return completion.choices[0].message.content.strip()
 
 
 # ============================================================
