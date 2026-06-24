@@ -15,7 +15,7 @@ import sys
 from email.header import decode_header
 from datetime import datetime
 
-from huggingface_hub import InferenceClient
+import requests
 
 # ------------------------------------------------------------
 # CONFIG
@@ -26,16 +26,16 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 
-# Open-source LLM via the Hugging Face Inference API (replaces the local Ollama
-# CLI so this can run headless on a CI cron runner). No proprietary service.
-# Get a free token at https://huggingface.co/settings/tokens
-HF_TOKEN = os.getenv("HF_TOKEN")
-LLM_MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+# Self-hosted, open-source: the LLM is served by Ollama over its HTTP API.
+# OLLAMA_BASE_URL points at the Ollama server (localhost in the CI runner or
+# on a VM; http://ollama:11434 under docker-compose).
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2:3b")
 
 
 def _require_env():
     missing = [
-        k for k in ("EMAIL_ADDRESS", "APP_PASSWORD", "HF_TOKEN")
+        k for k in ("EMAIL_ADDRESS", "APP_PASSWORD")
         if not os.getenv(k)
     ]
     if missing:
@@ -51,16 +51,15 @@ def _require_env():
 
 def ollama_generate(prompt):
     """
-    Calls an open-weight LLM through the Hugging Face Inference API.
-    Kept under the original name so the rest of the agent is unchanged.
+    Calls a local Ollama model over its HTTP API.
     """
-    client = InferenceClient(model=LLM_MODEL, token=HF_TOKEN)
-    completion = client.chat_completion(
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1024,
-        temperature=0.2,
+    resp = requests.post(
+        f"{OLLAMA_BASE_URL}/api/generate",
+        json={"model": LLM_MODEL, "prompt": prompt, "stream": False},
+        timeout=300,
     )
-    return completion.choices[0].message.content.strip()
+    resp.raise_for_status()
+    return resp.json()["response"].strip()
 
 
 # ============================================================

@@ -1,7 +1,7 @@
 name: Email Agent
 
-# Runs the email agent on a schedule. Adjust the cron as needed.
-# Times are UTC. This default runs once a day at 02:30 UTC.
+# Runs the email agent on a schedule. Times are UTC.
+# Default: once a day at 02:30 UTC.
 on:
   schedule:
     - cron: "30 2 * * *"
@@ -10,6 +10,9 @@ on:
 jobs:
   run-agent:
     runs-on: ubuntu-latest
+    env:
+      LLM_MODEL: llama3.2:3b
+      OLLAMA_BASE_URL: http://localhost:11434
     steps:
       - uses: actions/checkout@v4
 
@@ -20,10 +23,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Install and start Ollama (open-source, self-hosted in the runner)
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          # wait for the server to come up
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/tags >/dev/null && break
+            sleep 1
+          done
+          ollama pull "$LLM_MODEL"
+
       - name: Run email agent
         env:
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          LLM_MODEL: Qwen/Qwen2.5-7B-Instruct
         run: python agent.py
