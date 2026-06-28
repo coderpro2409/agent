@@ -1,0 +1,11 @@
+{
+  "name": "email-agent-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
+    "imapflow": "^1.0.190",
+    "mailparser": "^3.7.1"
+  }
+}
