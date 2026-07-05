@@ -57,24 +57,44 @@ async function llmReply(client, body, sender, category) {
   return `${greeting}\n\n${(msg.content[0]?.text || "").trim()}${closing}`;
 }
 
+async function readJsonBody(req) {
+  if (req.body) {
+    return typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+  }
+
+  const chunks = [];
+  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  if (!chunks.length) return {};
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
 export default async function handler(req, res) {
-  // --- access gate (refuse if no password configured: never expose email openly) ---
-  const required = process.env.ACCESS_PASSWORD;
-  if (!required) {
-    return res.status(503).json({ error: "Server not configured: set ACCESS_PASSWORD (and EMAIL_ADDRESS / APP_PASSWORD) env vars." });
-  }
-  const provided = req.headers["x-access-key"] || "";
-  if (provided !== required) return res.status(401).json({ error: "Invalid access key." });
+  res.setHeader("Cache-Control", "no-store");
 
-  const EMAIL_ADDRESS = process.env.EMAIL_ADDRESS;
-  const APP_PASSWORD = (process.env.APP_PASSWORD || "").replace(/\s/g, "");
-  if (!EMAIL_ADDRESS || !APP_PASSWORD) {
-    return res.status(503).json({ error: "Missing EMAIL_ADDRESS / APP_PASSWORD env vars." });
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ error: "Use POST to fetch inbox data." });
   }
 
-  // date: ?date=YYYY-MM-DD, default today
-  const dateParam = (req.query?.date || "").trim();
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return res.status(400).json({ error: "Invalid JSON request body." });
+  }
+
+  const emailAddress = String(body.email || "").trim();
+  const appPassword = String(body.appPassword || "").replace(/\s/g, "");
+  if (!emailAddress || !appPassword) {
+    return res.status(400).json({ error: "Enter a Gmail address and app password." });
+  }
+
+  // date: YYYY-MM-DD, default today
+  const dateParam = String(body.date || "").trim();
   const day = dateParam ? new Date(dateParam + "T00:00:00") : new Date();
+  if (Number.isNaN(day.getTime())) {
+    return res.status(400).json({ error: "Choose a valid date." });
+  }
   const start = new Date(day.getFullYear(), day.getMonth(), day.getDate());
 
   const anthropic = process.env.ANTHROPIC_API_KEY
@@ -83,7 +103,7 @@ export default async function handler(req, res) {
 
   const imap = new ImapFlow({
     host: IMAP_SERVER, port: IMAP_PORT, secure: true,
-    auth: { user: EMAIL_ADDRESS, pass: APP_PASSWORD }, logger: false,
+    auth: { user: emailAddress, pass: appPassword }, logger: false,
   });
 
   const results = [];
