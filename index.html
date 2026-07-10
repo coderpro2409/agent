@@ -128,8 +128,12 @@
   const MODEL_ID = "SmolLM2-360M-Instruct-q4f32_1-MLC";
   const MODEL_LABEL = "SmolLM2 360M (browser)";
   const WEBLLM_URL = "https://esm.run/@mlc-ai/web-llm@0.2.83";
-  const MAX_BROWSER_LLM_EMAILS = 5;
   const CATEGORIES = ["Payments", "Internship", "Work", "Networking", "Marketing/Promotion"];
+  const ANALYSIS_ATTEMPTS = [
+    { contentLimit: 1400, maxTokens: 130 },
+    { contentLimit: 900, maxTokens: 110 },
+    { contentLimit: 600, maxTokens: 96 },
+  ];
   const EMAIL_ANALYSIS_SCHEMA = JSON.stringify({
     type: "object",
     properties: {
@@ -208,7 +212,7 @@
     return `${greeting}\n\n${clean}${closing}`;
   }
 
-  function render(data, modelLabel) {
+  function render(data, modelLabel, emptyMessage = `No emails found for ${data.date}.`) {
     const emails = data.emails || [];
     const needReply = emails.filter((email) => email.needsReply).length;
     $("strip").innerHTML = `
@@ -230,7 +234,7 @@
           <div class="lbl">Summary</div><pre>${esc(email.summary)}</pre>
           ${email.draft && email.draft !== "Not required" ? `<div class="lbl">Draft reply</div><pre>${esc(email.draft)}</pre>` : ""}
         </div>`;
-    }).join("") || `<div class="card empty">No emails found for ${esc(data.date)}.</div>`;
+    }).join("") || `<div class="card empty">${esc(emptyMessage)}</div>`;
   }
 
   async function getBrowserEngine() {
@@ -253,7 +257,7 @@
     return enginePromise;
   }
 
-  async function analyzeEmail(engine, email) {
+  async function analyzeEmail(engine, email, contentLimit, maxTokens) {
     const completion = await engine.chat.completions.create({
       messages: [
         {
@@ -262,23 +266,48 @@
         },
         {
           role: "user",
-          content: `Rule-based category hint: ${email.category}\nRule-based reply hint: ${email.needsReply}\nSubject: ${email.subject}\nSender: ${email.sender}\n\n<email>\n${String(email.content || "").slice(0, 1800)}\n</email>`,
+          content: `Rule-based category hint: ${email.category}\nRule-based reply hint: ${email.needsReply}\nSubject: ${email.subject}\nSender: ${email.sender}\n\n<email>\n${String(email.content || "").slice(0, contentLimit)}\n</email>`,
         },
       ],
       temperature: 0.1,
-      max_tokens: 140,
+      max_tokens: maxTokens,
       response_format: { type: "json_object", schema: EMAIL_ANALYSIS_SCHEMA },
     });
 
     const parsed = parseJsonObject(completion?.choices?.[0]?.message?.content);
     if (!parsed) throw new Error("The browser model returned invalid JSON");
 
-    const category = normalizeCategory(parsed.category, email.category);
-    const needsReply = boolValue(parsed.needs_reply, email.needsReply);
-    const summary = normalizeSummary(parsed.summary, email.summary);
+    const category = normalizeCategory(parsed.category, "");
+    const needsReply = boolValue(parsed.needs_reply, null);
+    const summary = normalizeSummary(parsed.summary, "");
     const draftBody = String(parsed.draft_body || parsed.draft || "").trim();
-    const draft = needsReply && draftBody ? formatDraft(draftBody, email.sender) : (needsReply ? email.draft : "Not required");
+    if (!category || typeof needsReply !== "boolean" || !summary || (needsReply && !draftBody)) {
+      throw new Error("The browser model returned incomplete analysis");
+    }
+    const draft = needsReply ? formatDraft(draftBody, email.sender) : "Not required";
     return { ...email, category, needsReply, summary, draft, content: undefined };
+  }
+
+  async function resetModelState(engine) {
+    try { await engine.resetChat(); } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 75));
+  }
+
+  async function analyzeEmailWithRetry(engine, email, position, total) {
+    let lastError;
+    for (let attempt = 0; attempt < ANALYSIS_ATTEMPTS.length; attempt += 1) {
+      const options = ANALYSIS_ATTEMPTS[attempt];
+      setStatus(`${attempt ? "Retrying" : "Analyzing"} ${position} of ${total} with ${MODEL_LABEL}${attempt ? ` (attempt ${attempt + 1})` : ""}…`);
+      try {
+        const result = await analyzeEmail(engine, email, options.contentLimit, options.maxTokens);
+        await resetModelState(engine);
+        return result;
+      } catch (error) {
+        lastError = error;
+        await resetModelState(engine);
+      }
+    }
+    throw lastError || new Error("The browser model could not analyze this email");
   }
 
   $("run").addEventListener("click", async () => {
@@ -300,43 +329,30 @@
       const data = await r.json();
       if(!r.ok){ setStatus(data.error || ("Error " + r.status)); return; }
 
-      render(data, "local fallback");
       if (!data.emails?.length) {
+        render(data, MODEL_LABEL);
         setStatus(`0 email(s) on ${data.date}`);
         return;
       }
 
+      const sourceEmails = data.emails;
+      const analyzedEmails = [];
+      data.emails = analyzedEmails;
+      render(data, `${MODEL_LABEL} pending`, `${data.count} messages loaded. Starting LLM analysis…`);
+
       try {
         const engine = await getBrowserEngine();
-        const modelIndexes = data.emails
-          .map((email, index) => ({ index, needsReply: email.needsReply }))
-          .sort((a, b) => Number(b.needsReply) - Number(a.needsReply))
-          .slice(0, MAX_BROWSER_LLM_EMAILS)
-          .map((item) => item.index);
-        const modelIndexSet = new Set(modelIndexes);
-        data.emails = data.emails.map((item, index) => (
-          modelIndexSet.has(index) ? item : { ...item, content: undefined }
-        ));
-
-        let fallbackCount = data.emails.length - modelIndexes.length;
-        let analyzedCount = 0;
-        for (let position = 0; position < modelIndexes.length; position += 1) {
-          const index = modelIndexes[position];
-          setStatus(`Analyzing ${position + 1} of ${modelIndexes.length} selected emails with ${MODEL_LABEL}…`);
-          try {
-            data.emails[index] = await analyzeEmail(engine, data.emails[index]);
-            analyzedCount += 1;
-          } catch {
-            data.emails[index] = { ...data.emails[index], content: undefined };
-            fallbackCount += 1;
-          }
-          render(data, fallbackCount ? `${MODEL_LABEL} + fallback` : MODEL_LABEL);
+        for (let index = 0; index < sourceEmails.length; index += 1) {
+          const modeled = await analyzeEmailWithRetry(engine, sourceEmails[index], index + 1, sourceEmails.length);
+          sourceEmails[index] = null;
+          analyzedEmails.push(modeled);
+          render(data, MODEL_LABEL);
         }
-        setStatus(`${data.count} email(s) loaded; ${analyzedCount} analyzed with ${MODEL_LABEL}, ${fallbackCount} used local fallback.`);
+        setStatus(`${data.count} email(s) analyzed with ${MODEL_LABEL} on ${data.date}.`);
       } catch (modelError) {
-        data.emails = data.emails.map((item) => ({ ...item, content: undefined }));
-        render(data, "local fallback");
-        setStatus(`${data.count} email(s) loaded; browser LLM unavailable, so local fallback was used.`);
+        for (let index = 0; index < sourceEmails.length; index += 1) sourceEmails[index] = null;
+        render(data, `${MODEL_LABEL} incomplete`, "No LLM analyses completed.");
+        setStatus(`LLM analysis stopped after ${analyzedEmails.length} of ${data.count} email(s): ${modelError?.message || modelError}`);
         console.warn(modelError);
       }
     } catch(err){
