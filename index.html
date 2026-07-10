@@ -128,6 +128,7 @@
   const MODEL_ID = "SmolLM2-360M-Instruct-q4f32_1-MLC";
   const MODEL_LABEL = "SmolLM2 360M (browser)";
   const WEBLLM_URL = "https://esm.run/@mlc-ai/web-llm@0.2.83";
+  const MAX_BROWSER_LLM_EMAILS = 5;
   const CATEGORIES = ["Payments", "Internship", "Work", "Networking", "Marketing/Promotion"];
   const EMAIL_ANALYSIS_SCHEMA = JSON.stringify({
     type: "object",
@@ -261,11 +262,11 @@
         },
         {
           role: "user",
-          content: `Rule-based category hint: ${email.category}\nRule-based reply hint: ${email.needsReply}\nSubject: ${email.subject}\nSender: ${email.sender}\n\n<email>\n${String(email.content || "").slice(0, 3000)}\n</email>`,
+          content: `Rule-based category hint: ${email.category}\nRule-based reply hint: ${email.needsReply}\nSubject: ${email.subject}\nSender: ${email.sender}\n\n<email>\n${String(email.content || "").slice(0, 1800)}\n</email>`,
         },
       ],
       temperature: 0.1,
-      max_tokens: 180,
+      max_tokens: 140,
       response_format: { type: "json_object", schema: EMAIL_ANALYSIS_SCHEMA },
     });
 
@@ -307,18 +308,31 @@
 
       try {
         const engine = await getBrowserEngine();
-        let fallbackCount = 0;
-        for (let index = 0; index < data.emails.length; index += 1) {
-          setStatus(`Analyzing ${index + 1} of ${data.emails.length} with ${MODEL_LABEL}…`);
+        const modelIndexes = data.emails
+          .map((email, index) => ({ index, needsReply: email.needsReply }))
+          .sort((a, b) => Number(b.needsReply) - Number(a.needsReply))
+          .slice(0, MAX_BROWSER_LLM_EMAILS)
+          .map((item) => item.index);
+        const modelIndexSet = new Set(modelIndexes);
+        data.emails = data.emails.map((item, index) => (
+          modelIndexSet.has(index) ? item : { ...item, content: undefined }
+        ));
+
+        let fallbackCount = data.emails.length - modelIndexes.length;
+        let analyzedCount = 0;
+        for (let position = 0; position < modelIndexes.length; position += 1) {
+          const index = modelIndexes[position];
+          setStatus(`Analyzing ${position + 1} of ${modelIndexes.length} selected emails with ${MODEL_LABEL}…`);
           try {
             data.emails[index] = await analyzeEmail(engine, data.emails[index]);
+            analyzedCount += 1;
           } catch {
             data.emails[index] = { ...data.emails[index], content: undefined };
             fallbackCount += 1;
           }
           render(data, fallbackCount ? `${MODEL_LABEL} + fallback` : MODEL_LABEL);
         }
-        setStatus(`${data.count} email(s) analyzed on ${data.date}`);
+        setStatus(`${data.count} email(s) loaded; ${analyzedCount} analyzed with ${MODEL_LABEL}, ${fallbackCount} used local fallback.`);
       } catch (modelError) {
         data.emails = data.emails.map((item) => ({ ...item, content: undefined }));
         render(data, "local fallback");
