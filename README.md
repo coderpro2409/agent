@@ -2,17 +2,19 @@
 
 Vercel app that asks each visitor for their Gmail address and Gmail app password, reads that day's inbox over IMAP, summarizes messages, classifies them, and drafts replies.
 
-## No-key setup
+## Default open-source LLM
 
-No AI API key or AI environment variable is required. By default, the app uses local rules for classification and summarization plus local reply templates. This mode is not a generative LLM, but it keeps the app working without depending on an external model service.
+No AI API key or AI environment variable is required. By default, the app runs the Apache-2.0 `SmolLM2-360M-Instruct` model inside the visitor's browser through WebLLM and WebGPU. The model performs email categorization, summarization, reply detection, and reply drafting without sending email content to an AI provider.
 
-On Vercel, either leave `OPEN_MODEL_PROVIDER` unset or set:
+The first run downloads and caches roughly 580 MB of model data. Chrome or Edge with WebGPU is recommended. If WebGPU or the model download is unavailable, the app falls back to local rules and templates instead of failing.
+
+On Vercel, no AI variables are needed. Either leave `OPEN_MODEL_PROVIDER` unset or set:
 
 ```text
 OPEN_MODEL_PROVIDER=local
 ```
 
-Do not add `GROQ_API_KEY`, `ANTHROPIC_API_KEY`, or any other AI key.
+Do not add `GROQ_API_KEY`, `ANTHROPIC_API_KEY`, or any other AI key for the default browser model.
 
 ## Optional open-source LLM
 
