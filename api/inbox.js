@@ -7,6 +7,7 @@ import { simpleParser } from "mailparser";
 const IMAP_SERVER = process.env.IMAP_SERVER || "imap.gmail.com";
 const IMAP_PORT = parseInt(process.env.IMAP_PORT || "993", 10);
 const MAX_EMAILS = 15;
+const CLIENT_LLM_BODY_LIMIT = 3500;
 const OPEN_MODEL_PROVIDER = (process.env.OPEN_MODEL_PROVIDER || "local").toLowerCase();
 const OPEN_MODEL_PRESETS = {
   local: { url: "", model: "local-rules", apiKey: "" },
@@ -223,6 +224,7 @@ export default async function handler(req, res) {
 
   const emailAddress = String(body.email || "").trim();
   const appPassword = String(body.appPassword || "").replace(/\s/g, "");
+  const clientLlm = body.clientLLM === true;
   if (!emailAddress || !appPassword) {
     return res.status(400).json({ error: "Enter a Gmail address and app password." });
   }
@@ -241,6 +243,7 @@ export default async function handler(req, res) {
   });
 
   const results = [];
+  const useServerModel = OPEN_MODEL_ENABLED && !clientLlm;
   let usedOpenModel = false;
   let usedLocalFallback = false;
   try {
@@ -262,7 +265,7 @@ export default async function handler(req, res) {
 
         let summary;
         let draft;
-        if (OPEN_MODEL_ENABLED) {
+        if (useServerModel) {
           try {
             const modeled = await openModelAnalyzeEmail(body, sender, category, needsReply);
             summary = modeled.summary;
@@ -280,7 +283,15 @@ export default async function handler(req, res) {
           draft = needsReply ? localDraftReply(body, sender, category) : "Not required";
           usedLocalFallback = true;
         }
-        results.push({ subject, sender, category, needsReply, summary, draft });
+        results.push({
+          subject,
+          sender,
+          category,
+          needsReply,
+          summary,
+          draft,
+          ...(clientLlm ? { content: body.slice(0, CLIENT_LLM_BODY_LIMIT) } : {}),
+        });
       }
     } finally {
       lock.release();
@@ -296,7 +307,7 @@ export default async function handler(req, res) {
     count: results.length,
     llm: usedOpenModel
       ? `${OPEN_MODEL_PROVIDER}: ${OPEN_MODEL_NAME}${usedLocalFallback ? " + local fallback" : ""}`
-      : "local no-key",
+      : (clientLlm ? "browser LLM pending" : "local no-key"),
     emails: results,
   });
 }
