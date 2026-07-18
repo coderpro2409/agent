@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getUtcDayRange } from "./date-range.js";
+import { getUtcDayRange } from "../lib/date-range.js";
 
 test("builds an inclusive/exclusive UTC range for one calendar day", () => {
   const range = getUtcDayRange("2026-07-18");

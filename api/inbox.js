@@ -3,7 +3,7 @@
 // and falls back to local no-key templates if the endpoint is not configured.
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
-import { getUtcDayRange } from "./date-range.js";
+import { getUtcDayRange } from "../lib/date-range.js";
 
 const IMAP_SERVER = process.env.IMAP_SERVER || "imap.gmail.com";
 const IMAP_PORT = parseInt(process.env.IMAP_PORT || "993", 10);
