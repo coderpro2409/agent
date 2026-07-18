@@ -6,7 +6,7 @@ Vercel app that asks each visitor for their Gmail address and Gmail app password
 
 No AI API key or AI environment variable is required. By default, the app runs the Apache-2.0 `SmolLM2-360M-Instruct` model inside the visitor's browser through WebLLM and WebGPU. The model performs email categorization, summarization, reply detection, and reply drafting without sending email content to an AI provider.
 
-SmolLM2 processes every fetched message sequentially. Each email gets up to three schema-constrained LLM attempts with progressively shorter input if needed, and model state is cleared between messages. A full 15-message inbox can take several minutes depending on the visitor's GPU.
+SmolLM2 processes every message received on the selected calendar day sequentially. Each email gets up to three schema-constrained LLM attempts with progressively shorter input if needed, and model state is cleared between messages. If one message cannot be modeled, that message uses the server's fallback analysis while the remaining messages continue processing.
 
 The first run downloads and caches roughly 580 MB of model data. Chrome or Edge with WebGPU is required. If WebGPU or the model download is unavailable, the app reports that LLM analysis could not complete instead of presenting rule-based output as model-generated analysis.
 

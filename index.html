@@ -147,7 +147,9 @@
   });
   let enginePromise = null;
 
-  $("date").value = new Date().toISOString().slice(0,10);
+  const today = new Date();
+  today.setMinutes(today.getMinutes() - today.getTimezoneOffset());
+  $("date").value = today.toISOString().slice(0,10);
 
   function esc(s){ return (s||"").replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
   function setStatus(t){ $("statustext").textContent = t; }
@@ -210,6 +212,11 @@
       .replace(/\n+(thank you\s*)?regards[\s\S]*$/i, "")
       .trim();
     return `${greeting}\n\n${clean}${closing}`;
+  }
+
+  function withoutPrivateContent(email) {
+    const { content, ...displayEmail } = email;
+    return displayEmail;
   }
 
   function render(data, modelLabel, emptyMessage = `No emails found for ${data.date}.`) {
@@ -336,25 +343,41 @@
       }
 
       const sourceEmails = data.emails;
-      const analyzedEmails = [];
-      data.emails = analyzedEmails;
-      render(data, `${MODEL_LABEL} pending`, `${data.count} messages loaded. Starting LLM analysis…`);
+      const displayedEmails = sourceEmails.map(withoutPrivateContent);
+      data.emails = displayedEmails;
+      render(data, `${MODEL_LABEL} pending`);
 
+      let engine;
       try {
-        const engine = await getBrowserEngine();
-        for (let index = 0; index < sourceEmails.length; index += 1) {
-          const modeled = await analyzeEmailWithRetry(engine, sourceEmails[index], index + 1, sourceEmails.length);
-          sourceEmails[index] = null;
-          analyzedEmails.push(modeled);
-          render(data, MODEL_LABEL);
-        }
-        setStatus(`${data.count} email(s) analyzed with ${MODEL_LABEL} on ${data.date}.`);
+        engine = await getBrowserEngine();
       } catch (modelError) {
-        for (let index = 0; index < sourceEmails.length; index += 1) sourceEmails[index] = null;
-        render(data, `${MODEL_LABEL} incomplete`, "No LLM analyses completed.");
-        setStatus(`LLM analysis stopped after ${analyzedEmails.length} of ${data.count} email(s): ${modelError?.message || modelError}`);
+        sourceEmails.forEach((email) => { email.content = undefined; });
+        render(data, "rule-based fallback");
+        setStatus(`${data.count} email(s) loaded for ${data.date}. Browser LLM unavailable; showing fallback analysis.`);
         console.warn(modelError);
+        return;
       }
+
+      let modeledCount = 0;
+      let fallbackCount = 0;
+      for (let index = 0; index < sourceEmails.length; index += 1) {
+        const sourceEmail = sourceEmails[index];
+        try {
+          displayedEmails[index] = await analyzeEmailWithRetry(engine, sourceEmail, index + 1, sourceEmails.length);
+          modeledCount += 1;
+        } catch (modelError) {
+          // A malformed response for one message must not hide the rest of the day.
+          displayedEmails[index] = withoutPrivateContent(sourceEmail);
+          fallbackCount += 1;
+          console.warn(`Email ${index + 1} used fallback analysis`, modelError);
+        } finally {
+          sourceEmail.content = undefined;
+        }
+        render(data, fallbackCount ? `${MODEL_LABEL} + fallback` : MODEL_LABEL);
+      }
+
+      const fallbackNote = fallbackCount ? `; ${fallbackCount} used fallback analysis` : "";
+      setStatus(`${data.count} email(s) processed for ${data.date}: ${modeledCount} with ${MODEL_LABEL}${fallbackNote}.`);
     } catch(err){
       setStatus("Request failed: " + (err.message || err));
     } finally {

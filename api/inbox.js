@@ -3,10 +3,10 @@
 // and falls back to local no-key templates if the endpoint is not configured.
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import { getUtcDayRange } from "./date-range.js";
 
 const IMAP_SERVER = process.env.IMAP_SERVER || "imap.gmail.com";
 const IMAP_PORT = parseInt(process.env.IMAP_PORT || "993", 10);
-const MAX_EMAILS = 15;
 const CLIENT_LLM_BODY_LIMIT = 3500;
 const OPEN_MODEL_PROVIDER = (process.env.OPEN_MODEL_PROVIDER || "local").toLowerCase();
 const OPEN_MODEL_PRESETS = {
@@ -231,11 +231,11 @@ export default async function handler(req, res) {
 
   // date: YYYY-MM-DD, default today
   const dateParam = String(body.date || "").trim();
-  const day = dateParam ? new Date(dateParam + "T00:00:00") : new Date();
-  if (Number.isNaN(day.getTime())) {
+  const dayRange = getUtcDayRange(dateParam);
+  if (!dayRange) {
     return res.status(400).json({ error: "Choose a valid date." });
   }
-  const start = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+  const { date: selectedDate, start, end } = dayRange;
 
   const imap = new ImapFlow({
     host: IMAP_SERVER, port: IMAP_PORT, secure: true,
@@ -250,11 +250,16 @@ export default async function handler(req, res) {
     await imap.connect();
     const lock = await imap.getMailboxLock("INBOX");
     try {
-      let uids = await imap.search({ since: start });
+      // IMAP SINCE is inclusive and BEFORE is exclusive. Using both keeps the
+      // result set on the selected calendar day instead of leaking in newer mail.
+      let uids = await imap.search({ since: start, before: end }, { uid: true });
       if (!Array.isArray(uids)) uids = [];
-      uids = uids.slice(-MAX_EMAILS).reverse();
-      for (const uid of uids) {
-        const m = await imap.fetchOne(uid, { source: true });
+      const messages = uids.length
+        ? await imap.fetchAll(uids, { source: true }, { uid: true })
+        : [];
+      messages.sort((left, right) => right.uid - left.uid);
+
+      for (const m of messages) {
         if (!m || !m.source) continue;
         const parsed = await simpleParser(m.source);
         const subject = (parsed.subject || "(no subject)").trim();
@@ -303,7 +308,7 @@ export default async function handler(req, res) {
   }
 
   return res.status(200).json({
-    date: start.toISOString().slice(0, 10),
+    date: selectedDate,
     count: results.length,
     llm: usedOpenModel
       ? `${OPEN_MODEL_PROVIDER}: ${OPEN_MODEL_NAME}${usedLocalFallback ? " + local fallback" : ""}`
