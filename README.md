@@ -2,6 +2,8 @@
 
 Vercel app that asks each visitor for their Gmail address and Gmail app password, reads that day's inbox over IMAP, summarizes messages, classifies them, and drafts replies.
 
+The production IMAP API and deterministic email analysis are implemented in Python (`api/inbox.py` and `lib/email_agent.py`). The small browser layer is retained for the interface and the private WebLLM model.
+
 ## Default open-source LLM
 
 No AI API key or AI environment variable is required. By default, the app runs the Apache-2.0 `SmolLM2-360M-Instruct` model inside the visitor's browser through WebLLM and WebGPU. The model performs email categorization, summarization, reply detection, and reply drafting without sending email content to an AI provider.
@@ -69,3 +71,9 @@ IMAP_PORT
 ```
 
 Do not set Gmail email or Gmail app password in Vercel. Users enter those on the page for their own session/request.
+
+## Tests
+
+```text
+python -m unittest discover -s test -p "test_*.py"
+```
