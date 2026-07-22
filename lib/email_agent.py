@@ -59,10 +59,15 @@ def classify(subject: str, body: str) -> str:
         ("Networking", ("connect", "linkedin", "network", "collaborate")),
         ("Marketing/Promotion", ("sale", "offer", "discount", "promo", "unsubscribe")),
     )
+    # Score every category by keyword-hit count rather than stopping at the
+    # first match: a networking email that also mentions "project" should
+    # still classify as Networking, not fall into Work by list order alone.
+    best_category, best_score = "Work", 0
     for category, keywords in categories:
-        if any(keyword in text for keyword in keywords):
-            return category
-    return "Work"
+        score = sum(1 for keyword in keywords if keyword in text)
+        if score > best_score:
+            best_category, best_score = category, score
+    return best_category
 
 
 def reply_required(category: str) -> bool:

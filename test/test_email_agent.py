@@ -8,8 +8,11 @@ from lib.email_agent import (
     fetch_inbox,
     format_draft,
     get_utc_day_range,
+    is_elder,
+    local_draft_reply,
     normalize_summary,
     parse_message,
+    reply_required,
 )
 
 
@@ -32,6 +35,49 @@ class EmailAgentTests(unittest.TestCase):
         self.assertEqual(classify("Invoice", "Your bill is ready"), "Payments")
         self.assertEqual(classify("Hello", "Let's connect on LinkedIn"), "Networking")
         self.assertEqual(fallback_summary("One. Two! Three? Four."), "• One.\n• Two!\n• Three?")
+
+    def test_classification_picks_the_strongest_category_on_overlap(self):
+        # A networking email that also mentions "project" must not fall into
+        # Work just because Work is checked earlier in the category list.
+        self.assertEqual(
+            classify(
+                "Let's connect",
+                "I'd love to connect with you on LinkedIn and collaborate on a future project together.",
+            ),
+            "Networking",
+        )
+        # Conversely, a work email that happens to mention "network" issues
+        # should still classify as Work when Work has the stronger signal.
+        self.assertEqual(
+            classify(
+                "Project submission and network access",
+                "Please submit the assignment and confirm your network access for the meeting.",
+            ),
+            "Work",
+        )
+
+    def test_reply_required_only_for_work_and_networking(self):
+        self.assertTrue(reply_required("Work"))
+        self.assertTrue(reply_required("Networking"))
+        self.assertFalse(reply_required("Payments"))
+        self.assertFalse(reply_required("Internship"))
+        self.assertFalse(reply_required("Marketing/Promotion"))
+
+    def test_is_elder_matches_honorifics_and_titles(self):
+        self.assertTrue(is_elder("Principal Sharma <principal@school.edu>"))
+        self.assertTrue(is_elder("Ravi Teacher <ravi@school.edu>"))
+        self.assertFalse(is_elder("Alex Kumar <alex@company.com>"))
+
+    def test_local_draft_reply_picks_intent_specific_core_and_greeting(self):
+        meeting_draft = local_draft_reply("Let's meet on Zoom tomorrow", "Manager", "Work")
+        self.assertIn("noted the schedule", meeting_draft)
+        self.assertTrue(meeting_draft.startswith("Hello,"))
+
+        elder_draft = local_draft_reply(
+            "Please complete the assignment", "Principal Sharma", "Work"
+        )
+        self.assertTrue(elder_draft.startswith("Good Morning Sir/Ma'am,"))
+        self.assertTrue(elder_draft.rstrip().endswith("Regards\nPrahaan Sanghvi"))
 
     def test_parses_plain_text_message(self):
         message = EmailMessage()
