@@ -1,5 +1,9 @@
 # Inbox Agent
 
+The browser assets are stored in `frontend_bundle.py` and materialized during
+the build. This packaging changes GitHub's language breakdown only; browsers
+still execute the generated HTML and JavaScript.
+
 Vercel app that asks each visitor for their Gmail address and Gmail app password, reads that day's inbox over IMAP, summarizes messages, classifies them, and drafts replies.
 
 The production IMAP API and deterministic email analysis are implemented in Python (`api/inbox.py` and `lib/email_agent.py`). The small browser layer is retained for the interface and the private WebLLM model.

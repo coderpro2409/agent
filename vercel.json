@@ -1,4 +1,6 @@
 {
+  "buildCommand": "python frontend_bundle.py dist",
+  "outputDirectory": "dist",
   "functions": {
     "api/inbox.py": { "maxDuration": 60 }
   }
